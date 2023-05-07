@@ -1,16 +1,22 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-
+from collections import Counter
 
 # hyperparameters
 batch_size = 32
 block_size = 8
-max_iters = 5000
+max_iters = 1000
 eval_interval = 300
 learning_rate = 1e-2
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
+n_embed = 32
+context_size = 500
+
+
+
+
 
 print(device)
 
@@ -21,6 +27,8 @@ with open('input.txt', 'r', encoding='utf-8') as f:
 
 chars = sorted(list(set(text)))
 vocab_size = len(chars)
+char_counter = Counter(text)
+most_common_char = char_counter.most_common(1)[0][0]
 
 stoi = {ch:i for i,ch in enumerate(chars)}
 itos = {i:ch for i,ch in enumerate(chars)}
@@ -58,16 +66,25 @@ def estimate_loss():
 
 
 class BigramLanguageModel(nn.Module):
-  def __init__(self, vocab_size):
+  def __init__(self):
     super().__init__()
-    self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+    self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
+    self.position_embedding_table = nn.Embedding(context_size, n_embed)
+    self.lm_head = nn.Linear(n_embed, vocab_size)
+    
 
   def forward(self, idx, targets=None):
-    logits = self.token_embedding_table(idx)
-    B,T,C = logits.shape
+    B, T = idx.shape
+    tok_emb = self.token_embedding_table(idx)
+    pos_emb = self.position_embedding_table(torch.arange(T, device=device))
+    x = tok_emb + pos_emb
+    logits = self.lm_head(x)
+
+   
     if targets is None:
         loss = None
     else:
+      B,T,C = logits.shape
       logits = logits.view(B*T, C)
       targets = targets.view(B*T)
       loss = F.cross_entropy(logits, targets)
@@ -79,10 +96,14 @@ class BigramLanguageModel(nn.Module):
       logits = logits[:, -1, :]
       probs = F.softmax(logits, dim=-1)
       idx_next = torch.multinomial(probs, num_samples=1)
+      if idx_next.item() not in itos:
+            idx_next = torch.tensor([[stoi[most_common_char]]], dtype=torch.long, device=device)
+        
+      
       idx = torch.cat((idx, idx_next), dim=1)
     return idx
 
-model = BigramLanguageModel(vocab_size)
+model = BigramLanguageModel()
 m = model.to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3) 
 
@@ -94,11 +115,12 @@ for iter in range(max_iters):
      print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
   xb,yb = get_batch('train')
 
-  logits, loss = m(xb, yb)
+  logits, loss = model(xb, yb)
   optimizer.zero_grad(set_to_none=True)
   loss.backward()
   optimizer.step()
 
 context = torch.zeros((1,1), dtype=torch.long, device=device)
+
 print(decode(m.generate(context ,
-                        max_new_tokens=100)[0].tolist()))
+                        max_new_tokens=200)[0].tolist()))
